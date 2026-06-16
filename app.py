@@ -8,12 +8,13 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 
 # ==========================================
-# 1. API 設定 (採用 Streamlit Secrets 安全金鑰機制)
+# 1. API 設定 (安全讀取 Secrets 金鑰，避免 GitHub 警報)
 # ==========================================
 if "GROQ_API_KEY" in st.secrets:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 else:
-    GROQ_API_KEY = "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"
+    # 若本地密碼箱沒設定，則留空讓使用者知道，或維持基本執行
+    GROQ_API_KEY = ""
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -36,7 +37,7 @@ init_db()
 
 def sync_daily_totals(date_str, current_weight):
     conn = sqlite3.connect('diet_tracker.db')
-    c = cursor = conn.cursor()
+    c = conn.cursor()
     c.execute("SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fat) FROM food_items WHERE date = ?", (date_str,))
     res = c.fetchone()
     
@@ -187,12 +188,10 @@ tab_daily, tab_history, tab_chat = st.tabs(["📝 今日飲食紀錄", "📈 歷
 
 # ----------------- 分頁 1: 今日飲食紀錄 -----------------
 with tab_daily:
-    # 🌟 貼心功能升級：直接把「日期確認」放在填寫區正上方，讓使用者一眼看清、自由切換
     st.subheader("📅 第一步：確認您的紀錄日期")
     target_date = st.date_input("這筆餐點要記入哪一天的數據？", value=today_date, key="daily_record_date_picker")
     date_str = target_date.strftime("%Y-%m-%d")
 
-    # 即時重新加載該選定日期的資料，確保防呆防錯
     db_record = get_daily_record(date_str)
     st.session_state.total_calories = db_record[0] if (db_record and db_record[0]) else 0
     st.session_state.total_protein = db_record[1] if (db_record and db_record[1]) else 0
@@ -211,13 +210,20 @@ with tab_daily:
     food_text = st.text_input("例如：照片裡是炸雞排一片、半糖去冰紅茶大杯", placeholder="請在此處輸入食物描述...")
 
     if st.button("🚀 送出進行 AI 解析", key="nutrition_btn"):
-        if food_text:
+        if not GROQ_API_KEY:
+            st.error("🔑 偵測不到 API 金鑰，請確保您已在 .streamlit/secrets.toml 中設定 GROQ_API_KEY。")
+        elif food_text:
+            # 🧠 升級 Prompt：強制 AI 進行條列拆解，大幅消滅數學算錯的問題！
             text_prompt = (
-                f"妳是外食營養分析專家。請估算這段食物描述的總熱量（大卡）、蛋白質（克）、碳水化合物（克）、脂肪（克）：『{food_text}』。\n"
-                "請只回傳一個標準的 JSON 格式字串，不要包含任何 markdown 語法，格式嚴格如下：\n"
-                '{"calories": 120, "protein": 10, "carbs": 30, "fat": 5}'
+                f"妳是精準的外食營養分析專家。請嚴格根據以下食物描述進行步驟化估算：『{food_text}』。\n"
+                "【計算要求】\n"
+                "1. 請先在腦中將描述裡提及的各項食物（例如白飯克數、雞胸肉克數、蛋）的熱量與三大營養素分別估算出來。\n"
+                "2. 嚴格執行數學加總（熱量 = 蛋白質*4 + 碳水*4 + 脂肪*9）。\n"
+                "3. 不要盲目高估外食油量，請給出最符合現實克數的合理數字。\n\n"
+                "請『只回傳』一個標準的 JSON 格式字串，絕對不要包含任何 markdown 語法（不要包含 ```json），格式必須嚴格如下：\n"
+                '{"calories": 總熱量數字, "protein": 總蛋白質數字, "carbs": 總碳水數字, "fat": 總脂肪數字}'
             )
-            with st.spinner("AI 正在深度解析食物營養成分..."):
+            with st.spinner("AI 正在使用精準大腦解析食物成分..."):
                 try:
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
                     payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": text_prompt}], "temperature": 0.1}
@@ -335,7 +341,7 @@ with tab_history:
         st.download_button(label="📥 點我下載 CSV 歷史報表", data=csv, file_name='diet_report.csv', mime='text/csv')
 
         st.markdown("### 🤖 針對現狀的 AI 飲食建議")
-        if st.button("✨ 產出專屬現狀 analysis 報告"):
+        if st.button("✨ 產出專屬現狀分析報告"):
             avg_cal = df['calories'].mean()
             start_weight = df['weight'].iloc[0]
             end_weight = df['weight'].iloc[-1]
@@ -361,7 +367,6 @@ with tab_history:
     else:
         st.warning("📭 這段期間還沒有紀錄喔！請先到「今日飲食紀錄」結算並存檔。")
 
-    # 🌟 貼心修正處：將「吃貨清單」正式修正為優雅的「詳細飲食清單」
     st.write("---")
     st.subheader("🔍 單日飲食明細歷史查詢")
     search_date = st.date_input("選擇你想回顧的特定日期：", date.today(), key="history_search_picker")
@@ -402,7 +407,7 @@ with tab_chat:
             with st.spinner("思考中..."):
                 try:
                     chat_prompt = [
-                        {"role": "system", "content": "你是一位溫暖、專業且幽默的台灣營養師小助手。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
+                        {"role": "system", "content": "你是一位溫慢、專業且幽默的台灣營養師小助手。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
                     ] + st.session_state.messages
                     
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
