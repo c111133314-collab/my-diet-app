@@ -18,30 +18,73 @@ else:
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ==========================================
-# 2. 資料庫設定
+# 2. 資料庫設定 (結構升級)
 # ==========================================
 def init_db():
     conn = sqlite3.connect('diet_tracker.db')
     c = conn.cursor()
-    # 紀錄每日飲食的資料表
+    # 1. 紀錄每日總合與體重
     c.execute('''CREATE TABLE IF NOT EXISTS daily_records
                  (date TEXT PRIMARY KEY, weight REAL, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER)''')
-    # 紀錄使用者預設個人資料的資料表
+    # 2. 紀錄使用者個人資料
     c.execute('''CREATE TABLE IF NOT EXISTS user_profile
                  (id INTEGER PRIMARY KEY, gender TEXT, age INTEGER, height REAL, weight REAL, activity_level TEXT, goal TEXT)''')
+    # 3. 核心升級：紀錄每一筆吃進去的食物明細 (供刪除與歷史查看)
+    c.execute('''CREATE TABLE IF NOT EXISTS food_items
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, description TEXT, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def save_to_db(record_date, weight, calories, protein, carbs, fat):
+# -- 核心自動同步機制：當食物增刪時，自動重新計算當天總和並存入每日紀錄 --
+def sync_daily_totals(date_str, current_weight):
     conn = sqlite3.connect('diet_tracker.db')
     c = conn.cursor()
+    c.execute("SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fat) FROM food_items WHERE date = ?", (date_str,))
+    res = c.fetchone()
+    
+    calories = res[0] if res[0] is not None else 0
+    protein = res[1] if res[1] is not None else 0
+    carbs = res[2] if res[2] is not None else 0
+    fat = res[3] if res[3] is not None else 0
+    
     c.execute('''REPLACE INTO daily_records (date, weight, calories, protein, carbs, fat)
-                 VALUES (?, ?, ?, ?, ?, ?)''', 
-              (record_date, weight, calories, protein, carbs, fat))
+                 VALUES (?, ?, ?, ?, ?, ?)''', (date_str, current_weight, calories, protein, carbs, fat))
     conn.commit()
     conn.close()
+    
+    # 即時同步到當前使用者的網頁畫面上
+    if st.session_state.get('current_date') == date_str:
+        st.session_state.total_calories = calories
+        st.session_state.total_protein = protein
+        st.session_state.total_carbs = carbs
+        st.session_state.total_fat = fat
+
+def add_food_item(date_str, description, calories, protein, carbs, fat, current_weight):
+    conn = sqlite3.connect('diet_tracker.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO food_items (date, description, calories, protein, carbs, fat)
+                 VALUES (?, ?, ?, ?, ?, ?)''', (date_str, description, calories, protein, carbs, fat))
+    conn.commit()
+    conn.close()
+    sync_daily_totals(date_str, current_weight)
+
+def delete_food_item(item_id, date_str, current_weight):
+    conn = sqlite3.connect('diet_tracker.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM food_items WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+    sync_daily_totals(date_str, current_weight)
+
+def get_food_items(date_str):
+    conn = sqlite3.connect('diet_tracker.db')
+    c = conn.cursor()
+    c.execute("SELECT id, description, calories, protein, carbs, fat FROM food_items WHERE date = ?", (date_str,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 def get_daily_record(date_str):
     conn = sqlite3.connect('diet_tracker.db')
@@ -58,13 +101,11 @@ def load_history_data(start_date, end_date):
     conn.close()
     return df
 
-# -- 儲存與讀取使用者個人設定 --
 def save_profile_db(gender, age, height, weight, activity_level, goal):
     conn = sqlite3.connect('diet_tracker.db')
     c = conn.cursor()
     c.execute('''REPLACE INTO user_profile (id, gender, age, height, weight, activity_level, goal)
-                 VALUES (1, ?, ?, ?, ?, ?, ?)''', 
-              (gender, age, height, weight, activity_level, goal))
+                 VALUES (1, ?, ?, ?, ?, ?, ?)''', (gender, age, height, weight, activity_level, goal))
     conn.commit()
     conn.close()
 
@@ -77,11 +118,10 @@ def load_profile_db():
     return res
 
 # ==========================================
-# 3. 網頁初始設定與側邊欄 (含記憶功能)
+# 3. 網頁初始設定與側邊欄
 # ==========================================
 st.set_page_config(page_title="聚餐熱量計算機", page_icon="🍽️", layout="wide")
 
-# 讀取先前的設定，如果沒有就給預設值
 profile = load_profile_db()
 def_gender = profile[0] if profile else "女生"
 def_age = profile[1] if profile else 22
@@ -113,7 +153,6 @@ if st.sidebar.button("💾 儲存個人預設資料"):
     save_profile_db(gender, age, height, weight, activity_level, goal)
     st.sidebar.success("✅ 設定已儲存！下次打開會自動帶入。")
 
-# 智慧防打架引擎
 if 'total_calories' not in st.session_state:
     st.session_state.total_calories = 0
     st.session_state.total_protein = 0
@@ -122,16 +161,14 @@ if 'total_calories' not in st.session_state:
 
 date_str = today_date.strftime("%Y-%m-%d")
 
-if 'current_date' not in st.session_state:
-    st.session_state.current_date = date_str
-elif st.session_state.current_date != date_str:
+if 'current_date' not in st.session_state or st.session_state.current_date != date_str:
     st.session_state.current_date = date_str
     db_record = get_daily_record(date_str)
     if db_record:
-        st.session_state.total_calories = db_record[0]
-        st.session_state.total_protein = db_record[1]
-        st.session_state.total_carbs = db_record[2]
-        st.session_state.total_fat = db_record[3]
+        st.session_state.total_calories = db_record[0] if db_record[0] else 0
+        st.session_state.total_protein = db_record[1] if db_record[1] else 0
+        st.session_state.total_carbs = db_record[2] if db_record[2] else 0
+        st.session_state.total_fat = db_record[3] if db_record[3] else 0
     else:
         st.session_state.total_calories = 0
         st.session_state.total_protein = 0
@@ -140,7 +177,6 @@ elif st.session_state.current_date != date_str:
 
 atonement_tasks = ["波比跳 30 下", "開合跳 100 下", "深蹲 50 下", "快走 30 分鐘", "棒式維持 2 分鐘"]
 
-# 動態計算 BMR & TDEE
 if gender == "男生":
     bmr = 66.47 + (13.75 * weight) + (5.0 * height) - (6.76 * age)
 else:
@@ -202,28 +238,15 @@ with tab_daily:
                         json_match = re.search(r'\{.*\}', ai_raw, re.DOTALL)
                         if json_match:
                             data = json.loads(json_match.group(0))
-                            
                             cal = int(data.get("calories", 0))
                             prot = int(data.get("protein", 0))
                             carbs = int(data.get("carbs", 0))
                             fat = int(data.get("fat", 0))
                             
-                            st.session_state.total_calories += cal
-                            st.session_state.total_protein += prot
-                            st.session_state.total_carbs += carbs
-                            st.session_state.total_fat += fat
-                            
-                            save_to_db(date_str, weight, st.session_state.total_calories, 
-                                       st.session_state.total_protein, st.session_state.total_carbs, st.session_state.total_fat)
-                            
-                            st.success(
-                                f"✨ **解析成功並已即時自動存檔！**\n\n"
-                                f"📋 **【此餐食物營養成分】**\n"
-                                f"- 🔥 **熱量**：`{cal}` 大卡\n"
-                                f"- 🥩 **蛋白質**：`{prot}` 克\n"
-                                f"- 🍞 **碳水化合物**：`{carbs}` 克\n"
-                                f"- 🥑 **脂肪**：`{fat}` 克"
-                            )
+                            # 寫入明細表並自動同步
+                            add_food_item(date_str, food_text, cal, prot, carbs, fat, weight)
+                            st.success(f"✨ **解析成功並已寫入紀錄！** 熱量：`{cal}` 大卡")
+                            st.rerun()
                         else:
                             st.error("AI 回傳格式有誤，請再試一次。")
                     else:
@@ -236,19 +259,16 @@ with tab_daily:
     st.markdown("---")
     st.markdown("### 📝 或者有精準營養標示？手動輸入：")
     with st.expander("點我展開：手動輸入營養素"):
+        m_desc = st.text_input("🏷️ 食物/商品名稱", value="手動輸入項目")
         m_cal = st.number_input("🔥 總熱量 (大卡)", min_value=0, step=10)
         m_pro = st.number_input("🥩 蛋白質 (克)", min_value=0, step=1)
         m_carb = st.number_input("🍞 碳水化合物 (克)", min_value=0, step=1)
         m_fat = st.number_input("🥑 脂肪 (克)", min_value=0, step=1)
         if st.button("➕ 新增此筆手動紀錄"):
             if m_cal > 0 or m_pro > 0 or m_carb > 0 or m_fat > 0:
-                st.session_state.total_calories += m_cal
-                st.session_state.total_protein += m_pro
-                st.session_state.total_carbs += m_carb
-                st.session_state.total_fat += m_fat
-                save_to_db(date_str, weight, st.session_state.total_calories, 
-                           st.session_state.total_protein, st.session_state.total_carbs, st.session_state.total_fat)
-                st.success(f"✨ **手動新增成功並已即時存檔！** 增加了 {m_cal} 大卡。")
+                add_food_item(date_str, m_desc, m_cal, m_pro, m_carb, m_fat, weight)
+                st.success(f"✨ **手動紀錄成功！**")
+                st.rerun()
             else:
                 st.warning("請至少輸入一項大於 0 的數值喔！")
 
@@ -268,12 +288,28 @@ with tab_daily:
         st.metric("🥑 脂肪", f"{st.session_state.total_fat} / {target_fat} g")
         st.progress(min(st.session_state.total_fat / target_fat, 1.0) if target_fat > 0 else 0.0)
 
+    # ------ 許願功能 1：刪除食物紀錄區塊 ------
+    st.write("---")
+    st.subheader("🗑️ 當日飲食明細與刪除管理")
+    current_items = get_food_items(date_str)
+    if current_items:
+        item_options = {}
+        for idx, item_id, desc, c_cal, c_pro, c_carb, c_fat in zip(range(len(current_items)), *zip(*current_items)):
+            display_text = f"{idx+1}. {desc} (🔥{c_cal}卡 | 🥩{c_pro}g | 🍞{c_carb}g | 🥑{c_fat}g)"
+            item_options[display_text] = item_id
+            st.text(f"• {display_text}")
+        
+        delete_choice = st.selectbox("選擇一筆你想刪除的錯誤紀錄：", list(item_options.keys()))
+        if st.button("❌ 確定刪除此筆食物紀錄"):
+            delete_food_item(item_options[delete_choice], date_str, weight)
+            st.success("項目已成功移除，今日進度已自動扣除！")
+            st.rerun()
+    else:
+        st.info("今天目前還沒有任何飲食紀錄喔。")
+
     st.write("---")
     if st.button("💾 點我進行今日結算 (看慶祝彩帶)"):
-        save_to_db(date_str, weight, st.session_state.total_calories, 
-                   st.session_state.total_protein, st.session_state.total_carbs, st.session_state.total_fat)
-        st.success(f"✅ {date_str} 的數據已成功結算並更新！")
-        
+        st.success(f"✅ {date_str} 的數據已成功結算！")
         diff = st.session_state.total_calories - budget_cal
         if diff > 0:
             st.error(f"🚨 今日超標 {diff} 大卡！隨機贖罪任務：{random.choice(atonement_tasks)}")
@@ -292,20 +328,21 @@ with tab_history:
     df = load_history_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
     
     if not df.empty:
-        df['date'] = pd.to_datetime(df['date'])
-        df.set_index('date', inplace=True)
+        df_chart = df.copy()
+        df_chart['date'] = pd.to_datetime(df_chart['date'])
+        df_chart.set_index('date', inplace=True)
         
         st.markdown("### 📈 數據視覺化圖表")
         chart_col1, chart_col2 = st.columns(2)
         with chart_col1:
             st.caption("🔥 熱量攝取變化曲線 (大卡)")
-            st.line_chart(df['calories'], color="#FF4B4B")
+            st.line_chart(df_chart['calories'], color="#FF4B4B")
         with chart_col2:
             st.caption("⚖️ 體重變化曲線 (公斤)")
-            st.line_chart(df['weight'], color="#0068C9")
+            st.line_chart(df_chart['weight'], color="#0068C9")
 
         st.markdown("### 📁 匯出成果報告")
-        csv = df.to_csv().encode('utf-8-sig')
+        csv = df.to_csv(index=False).encode('utf-8-sig')
         st.download_button(label="📥 點我下載 CSV 歷史報表", data=csv, file_name='diet_report.csv', mime='text/csv')
 
         st.markdown("### 🤖 針對現狀的 AI 飲食建議")
@@ -335,11 +372,31 @@ with tab_history:
     else:
         st.warning("📭 這段期間還沒有紀錄喔！請先到「今日飲食紀錄」結算並存檔。")
 
+    # ------ 許願功能 2：點擊日期查看吃了什麼 ------
+    st.write("---")
+    st.subheader("🔍 單日飲食明細歷史查詢")
+    search_date = st.date_input("選擇你想回顧的特定日期：", date.today(), key="history_search_picker")
+    search_date_str = search_date.strftime("%Y-%m-%d")
+    
+    hist_items = get_food_items(search_date_str)
+    if hist_items:
+        st.markdown(f"📅 **{search_date_str} 的詳細吃貨清單：**")
+        hist_list = []
+        for _, desc, h_cal, h_pro, h_carb, h_fat in hist_items:
+            hist_list.append({
+                "食物名稱/描述": desc,
+                "熱量 (大卡)": h_cal,
+                "蛋白質 (克)": h_pro,
+                "碳水化合物 (克)": h_carb,
+                "脂肪 (克)": h_fat
+            })
+        st.table(pd.DataFrame(hist_list))
+    else:
+        st.info(f"固定日期 {search_date_str} 沒有留下任何飲食紀錄喔。")
+
 # ----------------- 分頁 3: AI 飲食小助理 -----------------
 with tab_chat:
     st.subheader("💬 妳的專屬 AI 飲食生活顧問")
-    st.caption("不管是不知道外食怎麼挑、還是減脂遇到瓶頸，都可以直接問我喔！")
-    
     if "messages" not in st.session_state:
         st.session_state.messages = []
         
@@ -362,7 +419,6 @@ with tab_chat:
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
                     payload = {"model": "llama-3.3-70b-versatile", "messages": chat_prompt, "temperature": 0.7}
                     chat_res = requests.post(API_URL, headers=headers, json=payload).json()
-                    
                     if "choices" in chat_res:
                         reply = chat_res["choices"][0]["message"]["content"]
                         st.markdown(reply)
