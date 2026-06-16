@@ -8,9 +8,14 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 
 # ==========================================
-# 1. API 設定
+# 1. API 設定 (採用 Streamlit Secrets 安全金鑰機制)
 # ==========================================
-GROQ_API_KEY = "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"
+if "GROQ_API_KEY" in st.secrets:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+else:
+    # 備用機制：如果雲端沒設定，才從這讀取（本地測試用）
+    GROQ_API_KEY = "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"
+
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ==========================================
@@ -141,7 +146,6 @@ with tab_daily:
             with st.spinner("AI 正在深度解析食物營養成分..."):
                 try:
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                    # 修正：使用 json=payload 自動處理 UTF-8 編碼，防止 latin-1 報錯
                     payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": text_prompt}], "temperature": 0.1}
                     response = requests.post(API_URL, headers=headers, json=payload, timeout=15)
                     res_json = response.json()
@@ -152,23 +156,19 @@ with tab_daily:
                         if json_match:
                             data = json.loads(json_match.group(0))
                             
-                            # 讀取當前這一餐的數值
                             cal = int(data.get("calories", 0))
                             prot = int(data.get("protein", 0))
                             carbs = int(data.get("carbs", 0))
                             fat = int(data.get("fat", 0))
                             
-                            # 累加至今日進度
                             st.session_state.total_calories += cal
                             st.session_state.total_protein += prot
                             st.session_state.total_carbs += carbs
                             st.session_state.total_fat += fat
                             
-                            # 背景即時自動同步寫入 SQLite 資料庫，不怕斷線重整
                             save_to_db(date_str, weight, st.session_state.total_calories, 
                                        st.session_state.total_protein, st.session_state.total_carbs, st.session_state.total_fat)
                             
-                            # ✨ 成功框：同步顯示這份食物的所有熱量與營養素！
                             st.success(
                                 f"✨ **解析成功並已即時自動存檔！**\n\n"
                                 f"📋 **【此餐食物營養成分】**\n"
@@ -187,7 +187,6 @@ with tab_daily:
             st.warning("請先輸入食物描述！")
 
     st.write("---")
-    # ✅ 已修正：拿掉「巨量」兩個字
     st.subheader("📊 今日營養素攝取進度")
     st.metric(label="🔥 總熱量", value=f"{st.session_state.total_calories} / {budget_cal} kcal")
     st.progress(min(st.session_state.total_calories / budget_cal, 1.0) if budget_cal > 0 else 0.0)
@@ -208,8 +207,6 @@ with tab_daily:
             st.error(f"🚨 今日超標 {diff} 大卡！隨機贖罪任務：{random.choice(atonement_tasks)}")
         else:
             st.balloons()
-
-# ----------------- 分頁 2: 歷史數據與報表 -----------------
 with tab_history:
     st.subheader("📅 選擇資料查詢區間")
     col_d1, col_d2 = st.columns(2)
