@@ -8,12 +8,11 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 
 # ==========================================
-# 1. API 設定 (安全讀取 Secrets 金鑰，避免 GitHub 警報)
+# 1. API 設定 (安全讀取 Secrets 金鑰)
 # ==========================================
 if "GROQ_API_KEY" in st.secrets:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 else:
-    # 若本地密碼箱沒設定，則留空讓使用者知道，或維持基本執行
     GROQ_API_KEY = ""
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -207,31 +206,36 @@ with tab_daily:
         uploaded_file = st.file_uploader("從相簿上傳照片", type=["jpg", "jpeg", "png"])
     
     st.markdown(f"### ✍️ 請補充說明這餐吃了什麼 (將記入 {date_str})：")
-    food_text = st.text_input("例如：照片裡是炸雞排一片、半糖去冰紅茶大杯", placeholder="請在此處輸入食物描述...")
+    food_text = st.text_input("例如：照片裡有一顆茶葉蛋(50-60g)和120g的炒高麗菜和200g白飯以及130g柚香雞胸肉", placeholder="請在此處輸入食物描述...")
 
     if st.button("🚀 送出進行 AI 解析", key="nutrition_btn"):
         if not GROQ_API_KEY:
             st.error("🔑 偵測不到 API 金鑰，請確保您已在 .streamlit/secrets.toml 中設定 GROQ_API_KEY。")
         elif food_text:
-            # 🧠 升級 Prompt：強制 AI 進行條列拆解，大幅消滅數學算錯的問題！
+            # 🧠 終極升級 Prompt：給予台灣外食參考值，並允許 AI 寫出完整計算過程！
             text_prompt = (
-                f"妳是精準的外食營養分析專家。請嚴格根據以下食物描述進行步驟化估算：『{food_text}』。\n"
-                "【計算要求】\n"
-                "1. 請先在腦中將描述裡提及的各項食物（例如白飯克數、雞胸肉克數、蛋）的熱量與三大營養素分別估算出來。\n"
-                "2. 嚴格執行數學加總（熱量 = 蛋白質*4 + 碳水*4 + 脂肪*9）。\n"
-                "3. 不要盲目高估外食油量，請給出最符合現實克數的合理數字。\n\n"
-                "請『只回傳』一個標準的 JSON 格式字串，絕對不要包含任何 markdown 語法（不要包含 ```json），格式必須嚴格如下：\n"
-                '{"calories": 總熱量數字, "protein": 總蛋白質數字, "carbs": 總碳水數字, "fat": 總脂肪數字}'
+                f"妳是精準的台灣外食營養專家。請評估這段食物描述：『{food_text}』。\n"
+                "【台灣常見食物營養參考 (每100g)】\n"
+                "- 白飯：約 130大卡 (碳水28g, 蛋白3g, 脂肪0.3g)\n"
+                "- 雞胸肉：約 110大卡 (蛋白23g, 脂肪1.5g)\n"
+                "- 茶葉蛋1顆：約 75大卡 (蛋白7g, 脂肪5g)\n"
+                "- 炒高麗菜：約 40大卡 (碳水5g, 脂肪2g)\n"
+                "【計算步驟要求】\n"
+                "1. 請先一步一步寫下各項食物換算克數後的熱量與三大營養素，並寫出加總的算式。\n"
+                "2. 嚴格遵守熱量公式：(蛋白質*4) + (碳水*4) + (脂肪*9)。\n"
+                "3. 最後，請『務必』附上標準 JSON 格式的總結，以便系統讀取，格式嚴格如下：\n"
+                '{"calories": 總熱量整數, "protein": 總蛋白質整數, "carbs": 總碳水整數, "fat": 總脂肪整數}'
             )
-            with st.spinner("AI 正在使用精準大腦解析食物成分..."):
+            with st.spinner("AI 正在使用升級版大腦精準解析食物成分..."):
                 try:
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
                     payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": text_prompt}], "temperature": 0.1}
-                    response = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+                    response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
                     res_json = response.json()
                     
                     if "choices" in res_json:
                         ai_raw = res_json["choices"][0]["message"]["content"].strip()
+                        # 利用正則表達式，自動忽略前面 AI 碎碎念的算式，只抓取最後的 JSON 括號
                         json_match = re.search(r'\{.*\}', ai_raw, re.DOTALL)
                         if json_match:
                             data = json.loads(json_match.group(0))
