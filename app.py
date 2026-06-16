@@ -116,7 +116,6 @@ def load_profile_db(current_user):
 # ==========================================
 st.set_page_config(page_title="聚餐熱量計算機", page_icon="🍽️", layout="wide")
 
-# 🔒 核心隱私安全設計：使用者代號登入
 st.sidebar.header("🔑 隱私與帳號隔離設定")
 user_input_name = st.sidebar.text_input(
     "🔒 輸入您的專屬暗號/暱稱：", 
@@ -125,7 +124,6 @@ user_input_name = st.sidebar.text_input(
     help="只要在此處輸入一個只有妳知道的暗號（例如：我的減肥密碼777），就能隨時在任何裝置找回妳的數據。留空點進來的人只會看到完全空白的頁面，看不到妳的任何資料！"
 )
 
-# 判斷目前是專屬暗號還是隨機訪客
 if user_input_name.strip() != "":
     current_user = user_input_name.strip()
 else:
@@ -137,7 +135,6 @@ else:
 st.sidebar.caption(f"📡 目前獨立雲端空間：`{current_user}`")
 st.sidebar.markdown("---")
 
-# 根據目前切換的使用者，載入專屬身體數值
 profile = load_profile_db(current_user)
 def_gender = profile[0] if profile else "女生"
 def_age = profile[1] if profile else 22
@@ -228,7 +225,7 @@ with tab_daily:
         uploaded_file = st.file_uploader("從相簿上傳照片", type=["jpg", "jpeg", "png"])
     
     st.markdown(f"### ✍️ 請補充說明這餐吃了什麼 (將記入 {date_str})：")
-    food_text = st.text_input("例如：照片裡有一顆茶葉蛋(50-60g)和120g的炒高麗菜和200g白飯以及130g柚香雞胸肉", placeholder="請在此處輸入食物描述...")
+    food_text = st.text_input("例如：一杯無糖去冰的大杯烏龍茶", placeholder="請在此處輸入食物描述...")
 
     if st.button("🚀 送出進行 AI 解析", key="nutrition_btn"):
         if not GROQ_API_KEY:
@@ -236,6 +233,7 @@ with tab_daily:
         elif food_text:
             text_prompt = (
                 f"妳是精準的台灣外食營養專家。請評估這段食物描述：『{food_text}』。\n"
+                "如果食物是一般無糖飲料(如無糖烏龍茶、綠茶、紅茶)，熱量和營養素皆為 0。\n"
                 "【台灣常見食物營養參考 (每100g)】\n"
                 "- 白飯：約 130大卡 (碳水28g, 蛋白3g, 脂肪0.3g)\n"
                 "- 雞胸肉：約 110大卡 (蛋白23g, 脂肪1.5g)\n"
@@ -243,8 +241,7 @@ with tab_daily:
                 "- 炒高麗菜：約 40大卡 (碳水5g, 脂肪2g)\n"
                 "【計算步驟要求】\n"
                 "1. 請先一步一步寫下各項食物換算克數後的熱量與三大營養素，並寫出加總的算式。\n"
-                "2. 嚴格遵守熱量公式：(蛋白質*4) + (碳水*4) + (脂肪*9)。\n"
-                "3. 最後，請『務必』附上標準 JSON 格式的總結，以便系統讀取，格式嚴格如下：\n"
+                "2. 最後，請『務必』將最終的標準 JSON 格式獨立寫在最後面，不要包含任何其他文字，格式嚴格如下：\n"
                 '{"calories": 總熱量整數, "protein": 總蛋白質整數, "carbs": 總碳水整數, "fat": 總脂肪整數}'
             )
             with st.spinner("AI 正在使用升級版大腦精準解析食物成分..."):
@@ -256,9 +253,14 @@ with tab_daily:
                     
                     if "choices" in res_json:
                         ai_raw = res_json["choices"][0]["message"]["content"].strip()
-                        json_match = re.search(r'\{.*\}', ai_raw, re.DOTALL)
-                        if json_match:
-                            data = json.loads(json_match.group(0))
+                        
+                        # 💡 強大的防呆解析器：直接從字串最後面找括號，過濾掉 AI 前面講的所有廢話
+                        start_idx = ai_raw.rfind('{')
+                        end_idx = ai_raw.rfind('}')
+                        
+                        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                            json_str = ai_raw[start_idx:end_idx+1]
+                            data = json.loads(json_str)
                             cal = int(data.get("calories", 0))
                             prot = int(data.get("protein", 0))
                             carbs = int(data.get("carbs", 0))
@@ -268,7 +270,7 @@ with tab_daily:
                             st.success(f"✨ **解析成功！已順利寫入 {date_str} 的 {current_user} 紀錄中！**")
                             st.rerun()
                         else:
-                            st.error("AI 回傳格式有誤，請再試一次。")
+                            st.error(f"AI 回傳格式有誤，請再試一次。(AI 碎碎念: {ai_raw})")
                     else:
                         st.error("伺服器忙碌中，請稍微再試一次。")
                 except Exception as e:
@@ -431,7 +433,7 @@ with tab_chat:
             with st.spinner("思考中..."):
                 try:
                     chat_prompt = [
-                        {"role": "system", "content": f"你是一位溫慢、專業且幽默的台灣營養師小助手。目前正在與使用者【{current_user}】對話。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
+                        {"role": "system", "content": f"你是一位溫暖、專業且幽默的台灣營養師小助手。目前正在與使用者【{current_user}】對話。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
                     ] + st.session_state.messages
                     
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
