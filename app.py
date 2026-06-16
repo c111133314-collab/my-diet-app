@@ -18,26 +18,26 @@ else:
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ==========================================
-# 2. 資料庫設定
+# 2. 資料庫設定 (升級 v2 支援多使用者帳號隔離)
 # ==========================================
 def init_db():
-    conn = sqlite3.connect('diet_tracker.db')
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS daily_records
-                 (date TEXT PRIMARY KEY, weight REAL, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER)''')
+                 (date TEXT, username TEXT, weight REAL, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER, PRIMARY KEY (date, username))''')
     c.execute('''CREATE TABLE IF NOT EXISTS user_profile
-                 (id INTEGER PRIMARY KEY, gender TEXT, age INTEGER, height REAL, weight REAL, activity_level TEXT, goal TEXT)''')
+                 (username TEXT PRIMARY KEY, gender TEXT, age INTEGER, height REAL, weight REAL, activity_level TEXT, goal TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS food_items
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, description TEXT, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, username TEXT, description TEXT, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def sync_daily_totals(date_str, current_weight):
-    conn = sqlite3.connect('diet_tracker.db')
+def sync_daily_totals(date_str, current_weight, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute("SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fat) FROM food_items WHERE date = ?", (date_str,))
+    c.execute("SELECT SUM(calories), SUM(protein), SUM(carbs), SUM(fat) FROM food_items WHERE date = ? AND username = ?", (date_str, current_user))
     res = c.fetchone()
     
     calories = res[0] if res[0] is not None else 0
@@ -45,8 +45,8 @@ def sync_daily_totals(date_str, current_weight):
     carbs = res[2] if res[2] is not None else 0
     fat = res[3] if res[3] is not None else 0
     
-    c.execute('''REPLACE INTO daily_records (date, weight, calories, protein, carbs, fat)
-                 VALUES (?, ?, ?, ?, ?, ?)''', (date_str, current_weight, calories, protein, carbs, fat))
+    c.execute('''REPLACE INTO daily_records (date, username, weight, calories, protein, carbs, fat)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''', (date_str, current_user, current_weight, calories, protein, carbs, fat))
     conn.commit()
     conn.close()
     
@@ -55,68 +55,90 @@ def sync_daily_totals(date_str, current_weight):
     st.session_state.total_carbs = carbs
     st.session_state.total_fat = fat
 
-def add_food_item(date_str, description, calories, protein, carbs, fat, current_weight):
-    conn = sqlite3.connect('diet_tracker.db')
+def add_food_item(date_str, description, calories, protein, carbs, fat, current_weight, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute('''INSERT INTO food_items (date, description, calories, protein, carbs, fat)
-                 VALUES (?, ?, ?, ?, ?, ?)''', (date_str, description, calories, protein, carbs, fat))
+    c.execute('''INSERT INTO food_items (date, username, description, calories, protein, carbs, fat)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''', (date_str, current_user, description, calories, protein, carbs, fat))
     conn.commit()
     conn.close()
-    sync_daily_totals(date_str, current_weight)
+    sync_daily_totals(date_str, current_weight, current_user)
 
-def delete_food_item(item_id, date_str, current_weight):
-    conn = sqlite3.connect('diet_tracker.db')
+def delete_food_item(item_id, date_str, current_weight, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute("DELETE FROM food_items WHERE id = ?", (item_id,))
+    c.execute("DELETE FROM food_items WHERE id = ? AND username = ?", (item_id, current_user))
     conn.commit()
     conn.close()
-    sync_daily_totals(date_str, current_weight)
+    sync_daily_totals(date_str, current_weight, current_user)
 
-def get_food_items(date_str):
-    conn = sqlite3.connect('diet_tracker.db')
+def get_food_items(date_str, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute("SELECT id, description, calories, protein, carbs, fat FROM food_items WHERE date = ?", (date_str,))
+    c.execute("SELECT id, description, calories, protein, carbs, fat FROM food_items WHERE date = ? AND username = ?", (date_str, current_user))
     rows = c.fetchall()
     conn.close()
     return rows
 
-def get_daily_record(date_str):
-    conn = sqlite3.connect('diet_tracker.db')
+def get_daily_record(date_str, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute("SELECT calories, protein, carbs, fat FROM daily_records WHERE date = ?", (date_str,))
+    c.execute("SELECT calories, protein, carbs, fat FROM daily_records WHERE date = ? AND username = ?", (date_str, current_user))
     res = c.fetchone()
     conn.close()
     return res
 
-def load_history_data(start_date, end_date):
-    conn = sqlite3.connect('diet_tracker.db')
-    query = f"SELECT * FROM daily_records WHERE date BETWEEN '{start_date}' AND '{end_date}' ORDER BY date ASC"
+def load_history_data(start_date, end_date, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
+    query = f"SELECT * FROM daily_records WHERE username = '{current_user}' AND date BETWEEN '{start_date}' AND '{end_date}' ORDER BY date ASC"
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
 
-def save_profile_db(gender, age, height, weight, activity_level, goal):
-    conn = sqlite3.connect('diet_tracker.db')
+def save_profile_db(gender, age, height, weight, activity_level, goal, current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute('''REPLACE INTO user_profile (id, gender, age, height, weight, activity_level, goal)
-                 VALUES (1, ?, ?, ?, ?, ?, ?)''', (gender, age, height, weight, activity_level, goal))
+    c.execute('''REPLACE INTO user_profile (username, gender, age, height, weight, activity_level, goal)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''', (current_user, gender, age, height, weight, activity_level, goal))
     conn.commit()
     conn.close()
 
-def load_profile_db():
-    conn = sqlite3.connect('diet_tracker.db')
+def load_profile_db(current_user):
+    conn = sqlite3.connect('diet_tracker_v2.db')
     c = conn.cursor()
-    c.execute("SELECT gender, age, height, weight, activity_level, goal FROM user_profile WHERE id = 1")
+    c.execute("SELECT gender, age, height, weight, activity_level, goal FROM user_profile WHERE username = ?", (current_user,))
     res = c.fetchone()
     conn.close()
     return res
 
 # ==========================================
-# 3. 網頁初始設定與側邊欄
+# 3. 網頁初始設定與側邊欄 (隱私隔離核心)
 # ==========================================
 st.set_page_config(page_title="聚餐熱量計算機", page_icon="🍽️", layout="wide")
 
-profile = load_profile_db()
+# 🔒 核心隱私安全設計：使用者代號登入
+st.sidebar.header("🔑 隱私與帳號隔離設定")
+user_input_name = st.sidebar.text_input(
+    "🔒 輸入您的專屬暗號/暱稱：", 
+    value="", 
+    placeholder="留空 = 全新空白臨時帳號",
+    help="只要在此處輸入一個只有妳知道的暗號（例如：我的減肥密碼777），就能隨時在任何裝置找回妳的數據。留空點進來的人只會看到完全空白的頁面，看不到妳的任何資料！"
+)
+
+# 判斷目前是專屬暗號還是隨機訪客
+if user_input_name.strip() != "":
+    current_user = user_input_name.strip()
+else:
+    if "browser_user_id" not in st.session_state:
+        import uuid
+        st.session_state.browser_user_id = "訪客_" + str(uuid.uuid4())[:6]
+    current_user = st.session_state.browser_user_id
+
+st.sidebar.caption(f"📡 目前獨立雲端空間：`{current_user}`")
+st.sidebar.markdown("---")
+
+# 根據目前切換的使用者，載入專屬身體數值
+profile = load_profile_db(current_user)
 def_gender = profile[0] if profile else "女生"
 def_age = profile[1] if profile else 22
 def_height = profile[2] if profile else 160.0
@@ -143,9 +165,9 @@ goal_opts = ["維持體重", "健康減脂", "積極瘦身", "乾淨增肌"]
 goal_index = goal_opts.index(def_goal) if def_goal in goal_opts else 1
 goal = st.sidebar.radio("減重策略目標：", goal_opts, index=goal_index)
 
-if st.sidebar.button("💾 儲存個人預設資料"):
-    save_profile_db(gender, age, height, weight, activity_level, goal)
-    st.sidebar.success("✅ 設定已儲存！下次打開會自動帶入。")
+if st.sidebar.button("💾 儲存個人專屬資料"):
+    save_profile_db(gender, age, height, weight, activity_level, goal, current_user)
+    st.sidebar.success(f"✅ 資料已成功鎖定在【{current_user}】空間！")
 
 if 'total_calories' not in st.session_state:
     st.session_state.total_calories = 0
@@ -191,7 +213,7 @@ with tab_daily:
     target_date = st.date_input("這筆餐點要記入哪一天的數據？", value=today_date, key="daily_record_date_picker")
     date_str = target_date.strftime("%Y-%m-%d")
 
-    db_record = get_daily_record(date_str)
+    db_record = get_daily_record(date_str, current_user)
     st.session_state.total_calories = db_record[0] if (db_record and db_record[0]) else 0
     st.session_state.total_protein = db_record[1] if (db_record and db_record[1]) else 0
     st.session_state.total_carbs = db_record[2] if (db_record and db_record[2]) else 0
@@ -212,7 +234,6 @@ with tab_daily:
         if not GROQ_API_KEY:
             st.error("🔑 偵測不到 API 金鑰，請確保您已在 .streamlit/secrets.toml 中設定 GROQ_API_KEY。")
         elif food_text:
-            # 🧠 終極升級 Prompt：給予台灣外食參考值，並允許 AI 寫出完整計算過程！
             text_prompt = (
                 f"妳是精準的台灣外食營養專家。請評估這段食物描述：『{food_text}』。\n"
                 "【台灣常見食物營養參考 (每100g)】\n"
@@ -235,7 +256,6 @@ with tab_daily:
                     
                     if "choices" in res_json:
                         ai_raw = res_json["choices"][0]["message"]["content"].strip()
-                        # 利用正則表達式，自動忽略前面 AI 碎碎念的算式，只抓取最後的 JSON 括號
                         json_match = re.search(r'\{.*\}', ai_raw, re.DOTALL)
                         if json_match:
                             data = json.loads(json_match.group(0))
@@ -244,8 +264,8 @@ with tab_daily:
                             carbs = int(data.get("carbs", 0))
                             fat = int(data.get("fat", 0))
                             
-                            add_food_item(date_str, food_text, cal, prot, carbs, fat, weight)
-                            st.success(f"✨ **解析成功！已順利寫入 {date_str} 的紀錄！**")
+                            add_food_item(date_str, food_text, cal, prot, carbs, fat, weight, current_user)
+                            st.success(f"✨ **解析成功！已順利寫入 {date_str} 的 {current_user} 紀錄中！**")
                             st.rerun()
                         else:
                             st.error("AI 回傳格式有誤，請再試一次。")
@@ -266,14 +286,14 @@ with tab_daily:
         m_fat = st.number_input("🥑 脂肪 (克)", min_value=0, step=1)
         if st.button("➕ 新增此筆手動紀錄"):
             if m_cal > 0 or m_pro > 0 or m_carb > 0 or m_fat > 0:
-                add_food_item(date_str, m_desc, m_cal, m_pro, m_carb, m_fat, weight)
+                add_food_item(date_str, m_desc, m_cal, m_pro, m_carb, m_fat, weight, current_user)
                 st.success(f"✨ **手動紀錄成功儲存至 {date_str}！**")
                 st.rerun()
             else:
                 st.warning("請至少輸入一項大於 0 的數值喔！")
 
     st.write("---")
-    st.subheader(f"📊 {date_str} 營養素攝取進度")
+    st.subheader(f"📊 {date_str} 營養素攝取進度 (帳號: {current_user})")
     st.metric(label="🔥 總熱量", value=f"{st.session_state.total_calories} / {budget_cal} kcal")
     st.progress(min(st.session_state.total_calories / budget_cal, 1.0) if budget_cal > 0 else 0.0)
 
@@ -290,7 +310,7 @@ with tab_daily:
 
     st.write("---")
     st.subheader(f"🗑️ {date_str} 飲食明細與刪除管理")
-    current_items = get_food_items(date_str)
+    current_items = get_food_items(date_str, current_user)
     if current_items:
         item_options = {}
         for idx, item_id, desc, c_cal, c_pro, c_carb, c_fat in zip(range(len(current_items)), *zip(*current_items)):
@@ -300,11 +320,11 @@ with tab_daily:
         
         delete_choice = st.selectbox("選擇一筆你想刪除的錯誤紀錄：", list(item_options.keys()))
         if st.button("❌ 確定刪除此筆食物紀錄"):
-            delete_food_item(item_options[delete_choice], date_str, weight)
+            delete_food_item(item_options[delete_choice], date_str, weight, current_user)
             st.success("項目已成功移除，今日進度已自動扣除！")
             st.rerun()
     else:
-        st.info("該日期目前還沒有任何飲食紀錄喔。")
+        st.info("該獨立空間目前還沒有任何飲食紀錄喔。")
 
     st.write("---")
     if st.button("💾 點我進行今日結算 (看慶祝彩帶)"):
@@ -324,7 +344,7 @@ with tab_history:
     with col_d2:
         end_date = st.date_input("結束日期", date.today())
     
-    df = load_history_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    df = load_history_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), current_user)
     
     if not df.empty:
         df_chart = df.copy()
@@ -352,7 +372,7 @@ with tab_history:
             weight_diff = end_weight - start_weight
             
             report_prompt = (
-                f"你是一位專業營養師。使用者從 {start_date} 到 {end_date} 期間，"
+                f"你是一位專業營養師。目前分析的是使用者【{current_user}】在 {start_date} 到 {end_date} 期間的數據，"
                 f"平均每日攝取 {avg_cal:.1f} 大卡。體重從 {start_weight}kg 變為 {end_weight}kg (變化 {weight_diff:+.1f}kg)。"
                 f"使用者的目標是：{goal}。請根據這些真實歷史數據，給予他對現狀的「建議更改方向」與「具體的飲食建議」。用繁體中文回答，語氣溫暖專業。"
             )
@@ -369,14 +389,14 @@ with tab_history:
                 except Exception as e:
                     st.error(f"連線錯誤: {e}")
     else:
-        st.warning("📭 這段期間還沒有紀錄喔！請先到「今日飲食紀錄」結算並存檔。")
+        st.warning(f"📭 空間【{current_user}】在這段期間還沒有紀錄喔！")
 
     st.write("---")
     st.subheader("🔍 單日飲食明細歷史查詢")
     search_date = st.date_input("選擇你想回顧的特定日期：", date.today(), key="history_search_picker")
     search_date_str = search_date.strftime("%Y-%m-%d")
     
-    hist_items = get_food_items(search_date_str)
+    hist_items = get_food_items(search_date_str, current_user)
     if hist_items:
         st.markdown(f"📅 **{search_date_str} 的詳細飲食清單：**")
         hist_list = []
@@ -394,7 +414,7 @@ with tab_history:
 
 # ----------------- 分頁 3: AI 飲食小助理 -----------------
 with tab_chat:
-    st.subheader("💬 妳的專屬 AI 飲食生活顧問")
+    st.subheader(f"💬 妳的專屬 AI 飲食生活顧問 (目前對話空間: {current_user})")
     if "messages" not in st.session_state:
         st.session_state.messages = []
         
@@ -411,7 +431,7 @@ with tab_chat:
             with st.spinner("思考中..."):
                 try:
                     chat_prompt = [
-                        {"role": "system", "content": "你是一位溫慢、專業且幽默的台灣營養師小助手。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
+                        {"role": "system", "content": f"你是一位溫慢、專業且幽默的台灣營養師小助手。目前正在與使用者【{current_user}】對話。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
                     ] + st.session_state.messages
                     
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
