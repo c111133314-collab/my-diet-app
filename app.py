@@ -23,8 +23,12 @@ API_URL = "https://api.groq.com/openai/v1/chat/completions"
 def init_db():
     conn = sqlite3.connect('diet_tracker.db')
     c = conn.cursor()
+    # 紀錄每日飲食的資料表
     c.execute('''CREATE TABLE IF NOT EXISTS daily_records
                  (date TEXT PRIMARY KEY, weight REAL, calories INTEGER, protein INTEGER, carbs INTEGER, fat INTEGER)''')
+    # 紀錄使用者預設個人資料的資料表
+    c.execute('''CREATE TABLE IF NOT EXISTS user_profile
+                 (id INTEGER PRIMARY KEY, gender TEXT, age INTEGER, height REAL, weight REAL, activity_level TEXT, goal TEXT)''')
     conn.commit()
     conn.close()
 
@@ -39,13 +43,6 @@ def save_to_db(record_date, weight, calories, protein, carbs, fat):
     conn.commit()
     conn.close()
 
-def load_history_data(start_date, end_date):
-    conn = sqlite3.connect('diet_tracker.db')
-    query = f"SELECT * FROM daily_records WHERE date BETWEEN '{start_date}' AND '{end_date}' ORDER BY date ASC"
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    return df
-
 def get_daily_record(date_str):
     conn = sqlite3.connect('diet_tracker.db')
     c = conn.cursor()
@@ -54,26 +51,69 @@ def get_daily_record(date_str):
     conn.close()
     return res
 
+def load_history_data(start_date, end_date):
+    conn = sqlite3.connect('diet_tracker.db')
+    query = f"SELECT * FROM daily_records WHERE date BETWEEN '{start_date}' AND '{end_date}' ORDER BY date ASC"
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
+# -- 儲存與讀取使用者個人設定 --
+def save_profile_db(gender, age, height, weight, activity_level, goal):
+    conn = sqlite3.connect('diet_tracker.db')
+    c = conn.cursor()
+    c.execute('''REPLACE INTO user_profile (id, gender, age, height, weight, activity_level, goal)
+                 VALUES (1, ?, ?, ?, ?, ?, ?)''', 
+              (gender, age, height, weight, activity_level, goal))
+    conn.commit()
+    conn.close()
+
+def load_profile_db():
+    conn = sqlite3.connect('diet_tracker.db')
+    c = conn.cursor()
+    c.execute("SELECT gender, age, height, weight, activity_level, goal FROM user_profile WHERE id = 1")
+    res = c.fetchone()
+    conn.close()
+    return res
+
 # ==========================================
-# 3. 網頁初始設定與側邊欄
+# 3. 網頁初始設定與側邊欄 (含記憶功能)
 # ==========================================
 st.set_page_config(page_title="聚餐熱量計算機", page_icon="🍽️", layout="wide")
+
+# 讀取先前的設定，如果沒有就給預設值
+profile = load_profile_db()
+def_gender = profile[0] if profile else "女生"
+def_age = profile[1] if profile else 22
+def_height = profile[2] if profile else 160.0
+def_weight = profile[3] if profile else 55.0
+def_activity = profile[4] if profile else "輕度活動量"
+def_goal = profile[5] if profile else "健康減脂"
+
 st.sidebar.header("👤 個人身體數值設定")
-
 today_date = st.sidebar.date_input("今天日期：", date.today())
-gender = st.sidebar.radio("性別：", ["女生", "男生"])
-age = st.sidebar.number_input("年齡 (歲)：", value=22, min_value=1, max_value=100)
-height = st.sidebar.number_input("身高 (公分)：", value=160.0, min_value=50.0, max_value=250.0)
-weight = st.sidebar.number_input("今日體重 (公斤)：", value=55.0, min_value=10.0, max_value=300.0)
 
-activity_level = st.sidebar.selectbox(
-    "日常活動量：",
-    ["久坐缺乏運動", "輕度活動量", "中度活動量", "高度活動量"]
-)
+gender_opts = ["女生", "男生"]
+gender_index = gender_opts.index(def_gender) if def_gender in gender_opts else 0
+gender = st.sidebar.radio("性別：", gender_opts, index=gender_index)
 
-goal = st.sidebar.radio("減重策略目標：", ["維持體重", "健康減脂", "積極瘦身", "乾淨增肌"])
+age = st.sidebar.number_input("年齡 (歲)：", value=int(def_age), min_value=1, max_value=100)
+height = st.sidebar.number_input("身高 (公分)：", value=float(def_height), min_value=50.0, max_value=250.0)
+weight = st.sidebar.number_input("今日體重 (公斤)：", value=float(def_weight), min_value=10.0, max_value=300.0)
 
-# 智慧防打架引擎：初始化個人的獨立空間，預設都是空白 (0)
+activity_opts = ["久坐缺乏運動", "輕度活動量", "中度活動量", "高度活動量"]
+activity_index = activity_opts.index(def_activity) if def_activity in activity_opts else 1
+activity_level = st.sidebar.selectbox("日常活動量：", activity_opts, index=activity_index)
+
+goal_opts = ["維持體重", "健康減脂", "積極瘦身", "乾淨增肌"]
+goal_index = goal_opts.index(def_goal) if def_goal in goal_opts else 1
+goal = st.sidebar.radio("減重策略目標：", goal_opts, index=goal_index)
+
+if st.sidebar.button("💾 儲存個人預設資料"):
+    save_profile_db(gender, age, height, weight, activity_level, goal)
+    st.sidebar.success("✅ 設定已儲存！下次打開會自動帶入。")
+
+# 智慧防打架引擎
 if 'total_calories' not in st.session_state:
     st.session_state.total_calories = 0
     st.session_state.total_protein = 0
@@ -82,7 +122,6 @@ if 'total_calories' not in st.session_state:
 
 date_str = today_date.strftime("%Y-%m-%d")
 
-# 只有當使用者「主動切換日期」時，才去撈該日期的資料庫歷史，不然每個人打開都是全新的
 if 'current_date' not in st.session_state:
     st.session_state.current_date = date_str
 elif st.session_state.current_date != date_str:
@@ -141,7 +180,7 @@ with tab_daily:
     with col_up:
         uploaded_file = st.file_uploader("從相簿上傳照片", type=["jpg", "jpeg", "png"])
     
-    st.markdown("### ✍️ 請補充說明這餐吃了什麼：")
+    st.markdown("### ✍️ 請補充說明這餐吃了什麼 (讓 AI 解析)：")
     food_text = st.text_input("例如：照片裡是炸雞排一片、半糖去冰紅茶大杯", placeholder="請在此處輸入食物描述...")
 
     if st.button("🚀 送出進行 AI 解析", key="nutrition_btn"):
@@ -188,11 +227,30 @@ with tab_daily:
                         else:
                             st.error("AI 回傳格式有誤，請再試一次。")
                     else:
-                        st.error("Groq 伺服器忙碌中，請稍微再試一次。")
+                        st.error("伺服器忙碌中，請稍微再試一次。")
                 except Exception as e:
                     st.error(f"解析失敗。錯誤: {e}")
         else:
             st.warning("請先輸入食物描述！")
+
+    st.markdown("---")
+    st.markdown("### 📝 或者有精準營養標示？手動輸入：")
+    with st.expander("點我展開：手動輸入營養素"):
+        m_cal = st.number_input("🔥 總熱量 (大卡)", min_value=0, step=10)
+        m_pro = st.number_input("🥩 蛋白質 (克)", min_value=0, step=1)
+        m_carb = st.number_input("🍞 碳水化合物 (克)", min_value=0, step=1)
+        m_fat = st.number_input("🥑 脂肪 (克)", min_value=0, step=1)
+        if st.button("➕ 新增此筆手動紀錄"):
+            if m_cal > 0 or m_pro > 0 or m_carb > 0 or m_fat > 0:
+                st.session_state.total_calories += m_cal
+                st.session_state.total_protein += m_pro
+                st.session_state.total_carbs += m_carb
+                st.session_state.total_fat += m_fat
+                save_to_db(date_str, weight, st.session_state.total_calories, 
+                           st.session_state.total_protein, st.session_state.total_carbs, st.session_state.total_fat)
+                st.success(f"✨ **手動新增成功並已即時存檔！** 增加了 {m_cal} 大卡。")
+            else:
+                st.warning("請至少輸入一項大於 0 的數值喔！")
 
     st.write("---")
     st.subheader("📊 今日營養素攝取進度")
@@ -200,9 +258,15 @@ with tab_daily:
     st.progress(min(st.session_state.total_calories / budget_cal, 1.0) if budget_cal > 0 else 0.0)
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("🥩 蛋白質", f"{st.session_state.total_protein} / {target_protein} g")
-    c2.metric("🍞 碳水", f"{st.session_state.total_carbs} / {target_carbs} g")
-    c3.metric("🥑 脂肪", f"{st.session_state.total_fat} / {target_fat} g")
+    with c1:
+        st.metric("🥩 蛋白質", f"{st.session_state.total_protein} / {target_protein} g")
+        st.progress(min(st.session_state.total_protein / target_protein, 1.0) if target_protein > 0 else 0.0)
+    with c2:
+        st.metric("🍞 碳水", f"{st.session_state.total_carbs} / {target_carbs} g")
+        st.progress(min(st.session_state.total_carbs / target_carbs, 1.0) if target_carbs > 0 else 0.0)
+    with c3:
+        st.metric("🥑 脂肪", f"{st.session_state.total_fat} / {target_fat} g")
+        st.progress(min(st.session_state.total_fat / target_fat, 1.0) if target_fat > 0 else 0.0)
 
     st.write("---")
     if st.button("💾 點我進行今日結算 (看慶祝彩帶)"):
