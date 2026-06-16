@@ -13,13 +13,12 @@ from datetime import datetime, date, timedelta
 if "GROQ_API_KEY" in st.secrets:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 else:
-    # 備用機制：如果雲端沒設定，才從這讀取（本地測試用）
     GROQ_API_KEY = "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"
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ==========================================
-# 2. 資料庫設定 (永久儲存防消失)
+# 2. 資料庫設定
 # ==========================================
 def init_db():
     conn = sqlite3.connect('diet_tracker.db')
@@ -56,7 +55,7 @@ def get_daily_record(date_str):
     return res
 
 # ==========================================
-# 3. 網頁初始設定與側邊欄 (BMR/TDEE 個人數值設定)
+# 3. 網頁初始設定與側邊欄
 # ==========================================
 st.set_page_config(page_title="聚餐熱量計算機", page_icon="🍽️", layout="wide")
 st.sidebar.header("👤 個人身體數值設定")
@@ -74,10 +73,19 @@ activity_level = st.sidebar.selectbox(
 
 goal = st.sidebar.radio("減重策略目標：", ["維持體重", "健康減脂", "積極瘦身", "乾淨增肌"])
 
-# 智慧防消失引擎：切換日期或重整時自動從資料庫抓數據
+# 智慧防打架引擎：初始化個人的獨立空間，預設都是空白 (0)
+if 'total_calories' not in st.session_state:
+    st.session_state.total_calories = 0
+    st.session_state.total_protein = 0
+    st.session_state.total_carbs = 0
+    st.session_state.total_fat = 0
+
 date_str = today_date.strftime("%Y-%m-%d")
 
-if 'current_date' not in st.session_state or st.session_state.current_date != date_str:
+# 只有當使用者「主動切換日期」時，才去撈該日期的資料庫歷史，不然每個人打開都是全新的
+if 'current_date' not in st.session_state:
+    st.session_state.current_date = date_str
+elif st.session_state.current_date != date_str:
     st.session_state.current_date = date_str
     db_record = get_daily_record(date_str)
     if db_record:
@@ -119,7 +127,7 @@ st.sidebar.warning(f"⚡ 每日消耗 (TDEE)：{int(tdee)} 大卡")
 st.sidebar.success(f"🎯 今日預算：{budget_cal} 大卡")
 
 # ==========================================
-# 4. 網頁主畫面 (三大功能分頁)
+# 4. 網頁主畫面
 # ==========================================
 st.title("🍽️ AI 飲食追蹤與數據分析報告")
 tab_daily, tab_history, tab_chat = st.tabs(["📝 今日飲食紀錄", "📈 歷史數據與 AI 報告", "💬 AI 飲食小助理"])
@@ -207,6 +215,8 @@ with tab_daily:
             st.error(f"🚨 今日超標 {diff} 大卡！隨機贖罪任務：{random.choice(atonement_tasks)}")
         else:
             st.balloons()
+
+# ----------------- 分頁 2: 歷史數據與報表 -----------------
 with tab_history:
     st.subheader("📅 選擇資料查詢區間")
     col_d1, col_d2 = st.columns(2)
@@ -261,7 +271,7 @@ with tab_history:
     else:
         st.warning("📭 這段期間還沒有紀錄喔！請先到「今日飲食紀錄」結算並存檔。")
 
-# ----------------- 分頁 3: AI 飲食小助理 (問答對話功能) -----------------
+# ----------------- 分頁 3: AI 飲食小助理 -----------------
 with tab_chat:
     st.subheader("💬 妳的專屬 AI 飲食生活顧問")
     st.caption("不管是不知道外食怎麼挑、還是減脂遇到瓶頸，都可以直接問我喔！")
