@@ -210,11 +210,18 @@ with tab_daily:
     target_date = st.date_input("這筆餐點要記入哪一天的數據？", value=today_date, key="daily_record_date_picker")
     date_str = target_date.strftime("%Y-%m-%d")
 
+    # 💡 這裡重寫成最標準的 if-else 判定，完美修復 Pylance 第 217 行報錯問題！
     db_record = get_daily_record(date_str, current_user)
-    st.session_state.total_calories = db_record[0] if (db_record and db_record[0]) else 0
-    st.session_state.total_protein = db_record[1] if (db_record and db_record[1]) else 0
-    st.session_state.total_carbs = db_record[2] if (db_record and db_record[2]) else 0
-    st.session_state.total_fat = db_record[3] if (db_record and db_record[3]) else 0
+    if db_record:
+        st.session_state.total_calories = db_record[0] if db_record[0] is not None else 0
+        st.session_state.total_protein = db_record[1] if db_record[1] is not None else 0
+        st.session_state.total_carbs = db_record[2] if db_record[2] is not None else 0
+        st.session_state.total_fat = db_record[3] if db_record[3] is not None else 0
+    else:
+        st.session_state.total_calories = 0
+        st.session_state.total_protein = 0
+        st.session_state.total_carbs = 0
+        st.session_state.total_fat = 0
 
     st.markdown("---")
     st.subheader("📸 拍照或上傳餐點照片")
@@ -254,7 +261,6 @@ with tab_daily:
                     if "choices" in res_json:
                         ai_raw = res_json["choices"][0]["message"]["content"].strip()
                         
-                        # 💡 強大的防呆解析器：直接從字串最後面找括號，過濾掉 AI 前面講的所有廢話
                         start_idx = ai_raw.rfind('{')
                         end_idx = ai_raw.rfind('}')
                         
@@ -272,7 +278,9 @@ with tab_daily:
                         else:
                             st.error(f"AI 回傳格式有誤，請再試一次。(AI 碎碎念: {ai_raw})")
                     else:
-                        st.error("伺服器忙碌中，請稍微再試一次。")
+                        # 💡 升級：直接把 Groq 報錯原因印在網頁上，若是 API 額度過期或金鑰失效一目了然！
+                        err_detail = res_json.get("error", {}).get("message", "雲端 AI 連線被拒絕，請檢查 API Key 是否有效。")
+                        st.error(f"❌ AI 服務回應錯誤：{err_detail}")
                 except Exception as e:
                     st.error(f"解析失敗。錯誤: {e}")
         else:
@@ -315,7 +323,9 @@ with tab_daily:
     current_items = get_food_items(date_str, current_user)
     if current_items:
         item_options = {}
-        for idx, item_id, desc, c_cal, c_pro, c_carb, c_fat in zip(range(len(current_items)), *zip(*current_items)):
+        # 💡 改用標準的 enumerate 迴圈，擺脫原先可能導致 Pylance 警告的複雜寫法
+        for idx, item in enumerate(current_items):
+            item_id, desc, c_cal, c_pro, c_carb, c_fat = item
             display_text = f"{idx+1}. {desc} (🔥{c_cal}卡 | 🥩{c_pro}g | 🍞{c_carb}g | 🥑{c_fat}g)"
             item_options[display_text] = item_id
             st.text(f"• {display_text}")
@@ -433,7 +443,7 @@ with tab_chat:
             with st.spinner("思考中..."):
                 try:
                     chat_prompt = [
-                        {"role": "system", "content": f"你是一位溫暖、專業且幽默的台灣營養師小助手。目前正在與使用者【{current_user}】對話。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
+                        {"role": "system", "content": f"你是一位溫慢、專業且幽默的台灣營養師小助手。目前正在與使用者【{current_user}】對話。請用繁體中文回答使用者的各種減重、飲食、外食挑選疑問，多用鼓勵的口吻。"}
                     ] + st.session_state.messages
                     
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
